@@ -6,4 +6,8 @@
 3. bidirectional knowledge graph
 
 
-use real dataset to test/validate
+--------
+to do:
+1. add trace behavior
+2. add reset behavior
+3. use real dataset to test/validate

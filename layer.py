@@ -8,7 +8,7 @@ n_steps = int(time_total/t_step)
 
 # Layer 1 - Inputs - 5 Neurons
 # Linear is not a neuron. it doesn't leak or fire. it's just a one-shot weighted sum
-layer_1= torch.nn.Linear(5, 3) 
+layer_1= torch.nn.Linear(5,3) 
 layer_1.weight.data = torch.rand(3, 5)
 
 # Layer 2 - 3 Neurons
@@ -17,15 +17,30 @@ mem = torch.zeros(3)
 spk_out, mem_out = [[],[],[]], [[],[],[]]
 input_history = []
 
+# STDP trace - one decaying value per input (5), tracks "how recently did input j spike"
+beta_trace = 0.9
+trace = torch.zeros(5)
+A_plus = 0.05  # max weight nudge size
+A_minus = 0.05
+
+# Run:
 for t in range(n_steps):
     input = torch.tensor(np.random.rand(5) < 0.1, dtype=torch.float32) # 5 inputs (0 or 1) per timestep -- will fire 10% of the time
     input_history.append(input)
     layer_1_out = layer_1(input) # computes 3 weighted sums -> 3 outputs
     spk, mem = lif(layer_1_out, mem)
+
+    trace = beta_trace * trace + input
+
     for i in range(3):
         spk_out[i].append(spk[i].item())
         mem_out[i].append(mem[i].item())
+        if spk[i].item == 1.0:
+            delta_w = A_plus * trace
+            layer_1.weight.data[i] += delta_w
 
+print("final trace:", trace)
+print("final weights:\n", layer_1.weight.data)
 
 # ---- printed table ----
 print(f"{'t':>4} | {'in (sum)':>9} | {'V0':>7} {'V1':>7} {'V2':>7} | {'spk0':>5} {'spk1':>5} {'spk2':>5}")
