@@ -18,3 +18,7 @@ for t in spikes_in:
     spk, mem = lif(t, mem) 
     spk_out.append(spk.item())
     mem_out.append(mem.item())
+
+print("input spikes: ", spikes_in.tolist())
+print("membrane volt:", [round(m, 2) for m in mem_out])
+print("spike or no spike: ", spk_out)
