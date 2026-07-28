@@ -31,6 +31,7 @@ beta_trace = 0.9
 A_plus = 0.05  # max weight nudge size
 A_minus = 0.05
 W_MIN, W_MAX = -1.0, 1.0  # weight clipping bounds
+MEM_MIN, MEM_MAX = -1.0, 2.0  # membrane potential clamp bounds
 
 spk_out, mem_out = [[] for _ in range(n_out)], [[] for _ in range(n_out)]
 input_history = []
@@ -50,12 +51,15 @@ for t in range(n_steps):
 
     out_1 = layer_1(input)
     spk_1, mem_1 = lif_1(out_1, mem_1)
+    mem_1 = torch.clamp(mem_1, min=MEM_MIN, max=MEM_MAX)
 
     out_2 = layer_2(spk_1)
     spk_2, mem_2 = lif_2(out_2, mem_2)
+    mem_2 = torch.clamp(mem_2, min=MEM_MIN, max=MEM_MAX)
 
     out_3 = layer_3(spk_2)
     spk_3, mem_3 = lif_3(out_3, mem_3)
+    mem_3 = torch.clamp(mem_3, min=MEM_MIN, max=MEM_MAX)
 
     trace_1 = beta_trace * trace_1 + input
     trace_2 = beta_trace * trace_2 + spk_1
