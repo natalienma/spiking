@@ -6,58 +6,86 @@ time_total = 1.0
 t_step = 0.1
 n_steps = int(time_total/t_step)
 
-# Layer 1 - Inputs - 5 Neurons
-# Linear is not a neuron. it doesn't leak or fire. it's just a one-shot weighted sum
-layer_1= torch.nn.Linear(5,3) 
-layer_1.weight.data = torch.rand(3, 5)
+n_in, n_hidden1, n_hidden2, n_out = 784, 128, 64, 10
 
-# Layer 2 - 3 Neurons
-lif = snn.Leaky(beta = 0.9, reset_mechanism = "subtract") # one global beta for now, soft reset
-mem = torch.zeros(3)
-spk_out, mem_out = [[],[],[]], [[],[],[]]
-input_history = []
+# Layer 1: input -> hidden1
+layer_1 = torch.nn.Linear(n_in, n_hidden1)  # default init: Kaiming-uniform, scaled by 1/sqrt(fan_in)
+lif_1 = snn.Leaky(beta=0.9, reset_mechanism="subtract")
+mem_1 = torch.zeros(n_hidden1)
+trace_1 = torch.zeros(n_in)  # tracks recent activity of layer_1's inputs
 
-# STDP trace - one decaying value per input (5), tracks "how recently did input j spike"
+# Layer 2: hidden1 -> hidden2
+layer_2 = torch.nn.Linear(n_hidden1, n_hidden2)
+lif_2 = snn.Leaky(beta=0.9, reset_mechanism="subtract")
+mem_2 = torch.zeros(n_hidden2)
+trace_2 = torch.zeros(n_hidden1)  # tracks recent spikes of layer_1's output
+
+# Layer 3: hidden2 -> output (must be 10 neurons)
+layer_3 = torch.nn.Linear(n_hidden2, n_out)
+lif_3 = snn.Leaky(beta=0.9, reset_mechanism="subtract")
+mem_3 = torch.zeros(n_out)
+trace_3 = torch.zeros(n_hidden2)  # tracks recent spikes of layer_2's output
+
 beta_trace = 0.9
-trace = torch.zeros(5)
 A_plus = 0.05  # max weight nudge size
 A_minus = 0.05
 
+spk_out, mem_out = [[] for _ in range(n_out)], [[] for _ in range(n_out)]
+input_history = []
+
+
+def hebbian_update(layer, spk, trace):
+    # potentiate weights of neurons that just fired, proportional to how recently their inputs fired
+    delta_w = A_plus * torch.outer(spk, trace)
+    layer.weight.data += delta_w
+
+
 # Run:
 for t in range(n_steps):
-    input = torch.tensor(np.random.rand(5) < 0.1, dtype=torch.float32) # 5 inputs (0 or 1) per timestep -- will fire 10% of the time
+    input = torch.tensor(np.random.rand(n_in) < 0.1, dtype=torch.float32)  # fires 10% of the time
     input_history.append(input)
-    layer_1_out = layer_1(input) # computes 3 weighted sums -> 3 outputs
-    spk, mem = lif(layer_1_out, mem)
 
-    trace = beta_trace * trace + input
+    out_1 = layer_1(input)
+    spk_1, mem_1 = lif_1(out_1, mem_1)
 
-    for i in range(3):
-        spk_out[i].append(spk[i].item())
-        mem_out[i].append(mem[i].item())
-        if spk[i].item == 1.0:
-            delta_w = A_plus * trace
-            layer_1.weight.data[i] += delta_w
+    out_2 = layer_2(spk_1)
+    spk_2, mem_2 = lif_2(out_2, mem_2)
 
-print("final trace:", trace)
-print("final weights:\n", layer_1.weight.data)
+    out_3 = layer_3(spk_2)
+    spk_3, mem_3 = lif_3(out_3, mem_3)
 
-# ---- printed table ----
-print(f"{'t':>4} | {'in (sum)':>9} | {'V0':>7} {'V1':>7} {'V2':>7} | {'spk0':>5} {'spk1':>5} {'spk2':>5}")
-print("-" * 60)
+    trace_1 = beta_trace * trace_1 + input
+    trace_2 = beta_trace * trace_2 + spk_1
+    trace_3 = beta_trace * trace_3 + spk_2
+
+    hebbian_update(layer_1, spk_1, trace_1)
+    hebbian_update(layer_2, spk_2, trace_2)
+    hebbian_update(layer_3, spk_3, trace_3)
+
+    for i in range(n_out):
+        spk_out[i].append(spk_3[i].item())
+        mem_out[i].append(mem_3[i].item())
+
+print("final output-layer trace:", trace_3)
+print("final output-layer weights:\n", layer_3.weight.data)
+
+# ---- printed table (output layer, 10 neurons) ----
+header = " | ".join(f"V{i:<2}" for i in range(n_out)) + " | " + " ".join(f"s{i}" for i in range(n_out))
+print(f"{'t':>4} | {'in (sum)':>9} | {header}")
+print("-" * (20 + 8 * n_out))
 for t in range(n_steps):
     in_sum = input_history[t].sum().item()
-    v0, v1, v2 = mem_out[0][t], mem_out[1][t], mem_out[2][t]
-    s0, s1, s2 = spk_out[0][t], spk_out[1][t], spk_out[2][t]
-    print(f"{t:>4} | {in_sum:>9.2f} | {v0:>7.2f} {v1:>7.2f} {v2:>7.2f} | {s0:>5.0f} {s1:>5.0f} {s2:>5.0f}")
+    voltages = " ".join(f"{mem_out[i][t]:>6.2f}" for i in range(n_out))
+    spikes = " ".join(f"{spk_out[i][t]:>2.0f}" for i in range(n_out))
+    print(f"{t:>4} | {in_sum:>9.2f} | {voltages} | {spikes}")
 
-# ---- plot ----
+# ---- plot (output layer, 10 neurons) ----
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 fig, ax = plt.subplots(figsize=(8, 4))
-for i in range(3):
+for i in range(n_out):
     ax.plot(range(n_steps), mem_out[i], label=f"neuron {i} voltage")
     for t in range(n_steps):
         if spk_out[i][t] == 1:
@@ -65,8 +93,8 @@ for i in range(3):
 ax.axhline(1.0, color="black", linestyle="--", label="threshold")
 ax.set_xlabel("timestep")
 ax.set_ylabel("membrane voltage")
-ax.legend()
-ax.set_title("3-neuron LIF layer")
+ax.legend(fontsize=6, ncol=2)
+ax.set_title(f"3-layer LIF network ({n_in}->{n_hidden1}->{n_hidden2}->{n_out})")
 plt.tight_layout()
 plt.savefig("step2_plot.png", dpi=120)
 print("\nsaved plot to step2_plot.png")
