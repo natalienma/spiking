@@ -12,7 +12,7 @@ layer_1= torch.nn.Linear(5,3)
 layer_1.weight.data = torch.rand(3, 5)
 
 # Layer 2 - 3 Neurons
-lif = snn.Leaky(beta = 0.9) # one global beta for now
+lif = snn.Leaky(beta = 0.9, reset_mechanism = "subtract") # one global beta for now, soft reset
 mem = torch.zeros(3)
 spk_out, mem_out = [[],[],[]], [[],[],[]]
 input_history = []
