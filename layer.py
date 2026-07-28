@@ -2,7 +2,7 @@ import snntorch as snn
 import torch
 import numpy as np
 
-time_total = 1.0
+time_total = 3.0
 t_step = 0.1
 n_steps = int(time_total/t_step)
 
@@ -10,34 +10,37 @@ n_in, n_hidden1, n_hidden2, n_out = 784, 128, 64, 10
 
 # Layer 1: input -> hidden1
 layer_1 = torch.nn.Linear(n_in, n_hidden1)  # default init: Kaiming-uniform, scaled by 1/sqrt(fan_in)
-lif_1 = snn.Leaky(beta=0.9, reset_mechanism="subtract")
+lif_1 = snn.Leaky(beta=0.9, reset_mechanism="zero")
 mem_1 = torch.zeros(n_hidden1)
 trace_1 = torch.zeros(n_in)  # tracks recent activity of layer_1's inputs
 
 # Layer 2: hidden1 -> hidden2
 layer_2 = torch.nn.Linear(n_hidden1, n_hidden2)
-lif_2 = snn.Leaky(beta=0.9, reset_mechanism="subtract")
+lif_2 = snn.Leaky(beta=0.9, reset_mechanism="zero")
 mem_2 = torch.zeros(n_hidden2)
 trace_2 = torch.zeros(n_hidden1)  # tracks recent spikes of layer_1's output
 
 # Layer 3: hidden2 -> output (must be 10 neurons)
 layer_3 = torch.nn.Linear(n_hidden2, n_out)
-lif_3 = snn.Leaky(beta=0.9, reset_mechanism="subtract")
+lif_3 = snn.Leaky(beta=0.9, reset_mechanism="zero")
 mem_3 = torch.zeros(n_out)
 trace_3 = torch.zeros(n_hidden2)  # tracks recent spikes of layer_2's output
+trace_4 = torch.zeros(n_out)  # tracks recent spikes of layer_3's output (post-trace for layer_3)
 
 beta_trace = 0.9
 A_plus = 0.05  # max weight nudge size
 A_minus = 0.05
+W_MIN, W_MAX = -1.0, 1.0  # weight clipping bounds
 
 spk_out, mem_out = [[] for _ in range(n_out)], [[] for _ in range(n_out)]
 input_history = []
 
 
-def hebbian_update(layer, spk, trace):
-    # potentiate weights of neurons that just fired, proportional to how recently their inputs fired
-    delta_w = A_plus * torch.outer(spk, trace)
-    layer.weight.data += delta_w
+def stdp_update(layer, pre_spike, post_spike, pre_trace, post_trace):
+    # delta_t > 0 (pre fired recently, post fires now): potentiate, weighted by pre_trace
+    # delta_t < 0 (post fired recently, pre fires now): depress, weighted by post_trace
+    delta_w = A_plus * torch.outer(post_spike, pre_trace) - A_minus * torch.outer(post_trace, pre_spike)
+    layer.weight.data = torch.clamp(layer.weight.data + delta_w, W_MIN, W_MAX)
 
 
 # Run:
@@ -57,10 +60,11 @@ for t in range(n_steps):
     trace_1 = beta_trace * trace_1 + input
     trace_2 = beta_trace * trace_2 + spk_1
     trace_3 = beta_trace * trace_3 + spk_2
+    trace_4 = beta_trace * trace_4 + spk_3
 
-    hebbian_update(layer_1, spk_1, trace_1)
-    hebbian_update(layer_2, spk_2, trace_2)
-    hebbian_update(layer_3, spk_3, trace_3)
+    stdp_update(layer_1, input, spk_1, trace_1, trace_2)
+    stdp_update(layer_2, spk_1, spk_2, trace_2, trace_3)
+    stdp_update(layer_3, spk_2, spk_3, trace_3, trace_4)
 
     for i in range(n_out):
         spk_out[i].append(spk_3[i].item())
