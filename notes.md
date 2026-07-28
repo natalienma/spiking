@@ -68,6 +68,8 @@ Tracing the input neurons' firing behavior is like a stripped down version of a 
 You add a `trace[j]` value for each input neuron. 
 `trace[j] = beta_trace * trace[j] + (1 if input[j] spiked, else 0)`
 
+### SHD:
+
 
 
 ## Next steps

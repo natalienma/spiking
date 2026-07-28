@@ -1,15 +1,30 @@
 import time
 
-import numpy as np
 import snntorch as snn
+import tonic
 import torch
 from codecarbon import EmissionsTracker
 
-time_total = 3.0
-t_step = 0.1
-n_steps = int(time_total / t_step)
+TIME_WINDOW_US = 5000  # 5ms bins -- SHD event timestamps are in microseconds
 
-n_in, n_hidden1, n_hidden2, n_out = 784, 128, 64, 10
+
+def load_shd_frames(index=0, train=True):
+    # SHD's raw events are a variable-length list of (channel, timestamp) pairs per sample,
+    # not a fixed-length vector. ToFrame bins them into discrete time_window-sized windows,
+    # producing a (timesteps, channels) tensor -- same shape our network already expects,
+    # just with real timing/channel data instead of random noise.
+    dataset = tonic.datasets.SHD(save_to="./data", train=train)
+    events, label = dataset[index]
+    to_frame = tonic.transforms.ToFrame(sensor_size=dataset.sensor_size, time_window=TIME_WINDOW_US)
+    frames = torch.from_numpy(to_frame(events)).squeeze(1).float()  # (timesteps, 700) spike counts
+    frames = (frames > 0).float()  # binarize: did the channel fire at all in this bin
+    return frames, label
+
+
+shd_frames, shd_label = load_shd_frames(index=0)
+n_in, n_steps = shd_frames.shape[1], shd_frames.shape[0]
+n_hidden1, n_hidden2, n_out = 128, 64, 10
+print(f"loaded SHD sample (label={shd_label}): {n_steps} timesteps x {n_in} channels, {TIME_WINDOW_US / 1000:.0f}ms bins")
 
 beta_trace = 0.9
 A_plus = 0.05  # max weight nudge size
@@ -17,7 +32,7 @@ A_minus = 0.05
 W_MIN, W_MAX = -1.0, 1.0  # weight clipping bounds
 MEM_MIN, MEM_MAX = -1.0, 2.0  # membrane potential clamp bounds
 
-N_REPEATS = 300  # repeat the sim to get a runtime long enough for codecarbon to measure
+N_REPEATS = 60  # repeat the sim to get a runtime long enough for codecarbon to measure
 
 
 def dense_forward(layer, x):
@@ -38,9 +53,8 @@ def stdp_update(layer, pre_spike, post_spike, pre_trace, post_trace):
     layer.weight.data = torch.clamp(layer.weight.data + delta_w, W_MIN, W_MAX)
 
 
-def run_simulation(forward_fn, seed=0, record_history=False):
+def run_simulation(forward_fn, frames, seed=0, record_history=False):
     torch.manual_seed(seed)
-    np.random.seed(seed)
 
     layer_1 = torch.nn.Linear(n_in, n_hidden1)
     layer_2 = torch.nn.Linear(n_hidden1, n_hidden2)
@@ -60,7 +74,7 @@ def run_simulation(forward_fn, seed=0, record_history=False):
     input_history = []
 
     for t in range(n_steps):
-        input = torch.tensor(np.random.rand(n_in) < 0.1, dtype=torch.float32)  # fires 10% of the time
+        input = frames[t]
 
         out_1 = forward_fn(layer_1, input)
         spk_1, mem_1 = lif_1(out_1, mem_1)
@@ -109,7 +123,7 @@ def measure_energy(forward_fn, label):
     tracker.start()
     start = time.perf_counter()
     for _ in range(N_REPEATS):
-        run_simulation(forward_fn, seed=0, record_history=False)
+        run_simulation(forward_fn, shd_frames, seed=0, record_history=False)
     elapsed = time.perf_counter() - start
     tracker.stop()
     data = tracker.final_emissions_data
@@ -145,7 +159,8 @@ with open(report_path, "w") as f:
     f.write("# Energy Comparison: Dense vs. Sparse Tensor Format\n\n")
     f.write(f"Measured with [codecarbon](https://github.com/mlco2/codecarbon) on `{dense_stats['cpu_model']}` ({dense_stats['os']}).\n\n")
     f.write(f"Network: {n_in} -> {n_hidden1} -> {n_hidden2} -> {n_out} LIF layers, "
-            f"{n_steps} timesteps per run, {N_REPEATS} runs per variant.\n\n")
+            f"input: SHD sample (label={shd_label}), {n_steps} timesteps of {TIME_WINDOW_US / 1000:.0f}ms bins, "
+            f"{N_REPEATS} runs per variant.\n\n")
     f.write("| variant | duration (s) | energy (kWh) | CO2eq (kg) |\n")
     f.write("|---|---|---|---|\n")
     for stats in (dense_stats, sparse_stats):
@@ -154,7 +169,7 @@ with open(report_path, "w") as f:
 print(f"saved energy report to {report_path}")
 
 # ---- single recorded run for the table/plot (dense; not part of the energy measurement) ----
-plot_result = run_simulation(dense_forward, seed=0, record_history=True)
+plot_result = run_simulation(dense_forward, shd_frames, seed=0, record_history=True)
 spk_out, mem_out, input_history = plot_result["spk_out"], plot_result["mem_out"], plot_result["input_history"]
 
 print("\nfinal output-layer trace:", plot_result["trace_3"])
@@ -185,7 +200,7 @@ ax.axhline(1.0, color="black", linestyle="--", label="threshold")
 ax.set_xlabel("timestep")
 ax.set_ylabel("membrane voltage")
 ax.legend(fontsize=6, ncol=2)
-ax.set_title(f"3-layer LIF network ({n_in}->{n_hidden1}->{n_hidden2}->{n_out})")
+ax.set_title(f"3-layer LIF network ({n_in}->{n_hidden1}->{n_hidden2}->{n_out}) on SHD sample (label={shd_label})")
 plt.tight_layout()
 plt.savefig("step2_plot.png", dpi=120)
 print("\nsaved plot to step2_plot.png")
