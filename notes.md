@@ -104,24 +104,23 @@ done:
 - add reset behavior
 - extend SNN 
 - sparse tensor format
-
-to do:
-- add some form of supervised learning:
+- study supervised learning rules:
     - surrogate gradients
     - R-STDP
     - STDP with logistic regression
+- use real dataset to test/validate 
+    - MNIST 
+    - SHD
 
+to do:
 - different types of neurons
 - tiling
 - conditional kernels
 - parallelism/parallel scan
 - how do cochlear models work? 
-
-- use real dataset to test/validate - SHD
 -   bins (test small, medium, large)
     Small (fine-grained): ~1–5ms bins → ~200–1000 timesteps per sample.
     Medium: ~10ms bins → ~100 timesteps.
     Big (coarse): ~20–50ms bins → ~20–50 timesteps.
 - at what point do you stop/is the model competent enough
-
 - variable beta for different neurons (heterogeneous time constants)
