@@ -72,8 +72,6 @@ You add a `trace[j]` value for each input neuron.
 Like the MNIST dataset for classifying numbers, but through binary sound instead of images.
 - bins: basically how much time is in one timestep
 
-## Learning: STDP with Logistic Regression
-
 ## Learning: Surrogate gradients with backprop
 After forward pass, how do we determine loss/accuracy?
 
@@ -92,9 +90,11 @@ Only counts the state of the final timestep
 The most common--
 Adds up all the voltage in the output neurons, built up over the entire sequence, then softmaxes that. Because voltage is continuous, it will be less noisy than spikes. 
 
-**Final Timestep Readout**
-## Learning: R-STDP
+## Learning: STDP with Logistic Regression
+Similar to surrogate gradients but you don't touch the hidden layers' weights. This way you don't have to deal with the non-differentiable dspk/dmem.
 
+## Learning: R-STDP
+STDP with global reward signals. Only adds delta_w if eligible/correct output. Still timing-based with pre-post synaptic delta_t, which is proportional to trace value.
 
 
 ## Next steps
