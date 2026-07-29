@@ -1,4 +1,6 @@
-## Equations
+# Notes --------------------------------------------
+
+## Equations-----------------------------------------
 ### Spike times:
 s(t)=k∑​δ(t−tk​)
 - list of moments the neuron spiked
@@ -31,6 +33,7 @@ I[t]=j∑​wj​Sj​[t]
 - Sj[t] = whether it spiked or not (1 or 0)
 - multiply by that synapse's weight, wj
 
+--------------------------------------------
 ## hyperparameters vs. trained parameters
 hyperparameters:
 - A+ and A- (strengthen/weaken amounts)
@@ -40,6 +43,7 @@ trained parameters:
 - synapse weights
 - threshold (although usually fixed)
 
+--------------------------------------------
 ## questions:
 1. Over time, if B often fires after A, we increase the weight `w` between the two. Isn't this artificially inflating the number of times B will fire? Why not let A naturally influence B?
 - `w` is randomly assigned at first. Updating it is just learning
@@ -61,18 +65,20 @@ trained parameters:
 Fix:
 - inhibitory connections: some synapses have negative weights that suppress. 
 
-
-### Why Trace?
+6. Why Trace?
 Tracing the input neurons' firing behavior is like a stripped down version of a LIF, without the sum. 
 
 You add a `trace[j]` value for each input neuron. 
 `trace[j] = beta_trace * trace[j] + (1 if input[j] spiked, else 0)`
 
-### SHD:
+7. Why SHD?
 Like the MNIST dataset for classifying numbers, but through binary sound instead of images.
 - bins: basically how much time is in one timestep
 
-## Learning: Surrogate gradients with backprop
+--------------------------------------------
+## Supervised Learning rules 
+
+### Learning: Surrogate gradients with backprop
 After forward pass, how do we determine loss/accuracy?
 
 **Spike Based Readout.**
