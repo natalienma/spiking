@@ -1,197 +1,64 @@
-import time
-
 import snntorch as snn
-import tonic
 import torch
-from codecarbon import EmissionsTracker
+import numpy as np
 
-TIME_WINDOW_US = 5000  # 5ms bins -- SHD event timestamps are in microseconds
+time_total = 1.0
+t_step = 0.1
+n_steps = int(time_total/t_step)
 
+# Layer 1 - Inputs - 5 Neurons
+# Linear is not a neuron. it doesn't leak or fire. it's just a one-shot weighted sum
+layer_1= torch.nn.Linear(5,3) 
+layer_1.weight.data = torch.rand(3, 5)
 
-def load_shd_frames(index=0, train=True):
-    # SHD's raw events are a variable-length list of (channel, timestamp) pairs per sample,
-    # not a fixed-length vector. ToFrame bins them into discrete time_window-sized windows,
-    # producing a (timesteps, channels) tensor -- same shape our network already expects,
-    # just with real timing/channel data instead of random noise.
-    dataset = tonic.datasets.SHD(save_to="./data", train=train)
-    events, label = dataset[index]
-    to_frame = tonic.transforms.ToFrame(sensor_size=dataset.sensor_size, time_window=TIME_WINDOW_US)
-    frames = torch.from_numpy(to_frame(events)).squeeze(1).float()  # (timesteps, 700) spike counts
-    frames = (frames > 0).float()  # binarize: did the channel fire at all in this bin
-    return frames, label
+# Layer 2 - 3 Neurons
+lif = snn.Leaky(beta = 0.9) # one global beta for now
+lif = snn.Leaky(beta = 0.9, reset_mechanism = "subtract") # one global beta for now, soft reset
+mem = torch.zeros(3)
+spk_out, mem_out = [[],[],[]], [[],[],[]]
+input_history = []
 
-
-shd_frames, shd_label = load_shd_frames(index=0)
-n_in, n_steps = shd_frames.shape[1], shd_frames.shape[0]
-n_hidden1, n_hidden2, n_out = 128, 64, 10
-print(f"loaded SHD sample (label={shd_label}): {n_steps} timesteps x {n_in} channels, {TIME_WINDOW_US / 1000:.0f}ms bins")
-
+# STDP trace - one decaying value per input (5), tracks "how recently did input j spike"
 beta_trace = 0.9
+trace = torch.zeros(5)
 A_plus = 0.05  # max weight nudge size
 A_minus = 0.05
-W_MIN, W_MAX = -1.0, 1.0  # weight clipping bounds
-MEM_MIN, MEM_MAX = -1.0, 2.0  # membrane potential clamp bounds
 
-N_REPEATS = 60  # repeat the sim to get a runtime long enough for codecarbon to measure
+# Run:
+for t in range(n_steps):
+    input = torch.tensor(np.random.rand(5) < 0.1, dtype=torch.float32) # 5 inputs (0 or 1) per timestep -- will fire 10% of the time
+    input_history.append(input)
+    layer_1_out = layer_1(input) # computes 3 weighted sums -> 3 outputs
+    spk, mem = lif(layer_1_out, mem)
 
+    trace = beta_trace * trace + input
 
-def dense_forward(layer, x):
-    return layer(x)
+    for i in range(3):
+        spk_out[i].append(spk[i].item())
+        mem_out[i].append(mem[i].item())
+        if spk[i].item == 1.0:
+            delta_w = A_plus * trace
+            layer_1.weight.data[i] += delta_w
 
+print("final trace:", trace)
+print("final weights:\n", layer_1.weight.data)
 
-def sparse_forward(layer, x):
-    # spikes are mostly zero (~10% active) -- represent them as a sparse row vector
-    # so the matmul only touches the nonzero entries instead of the full dense input
-    x_sparse = x.unsqueeze(0).to_sparse()
-    return (torch.sparse.mm(x_sparse, layer.weight.t()) + layer.bias).squeeze(0)
-
-
-def stdp_update(layer, pre_spike, post_spike, pre_trace, post_trace):
-    # delta_t > 0 (pre fired recently, post fires now): potentiate, weighted by pre_trace
-    # delta_t < 0 (post fired recently, pre fires now): depress, weighted by post_trace
-    delta_w = A_plus * torch.outer(post_spike, pre_trace) - A_minus * torch.outer(post_trace, pre_spike)
-    layer.weight.data = torch.clamp(layer.weight.data + delta_w, W_MIN, W_MAX)
-
-
-def run_simulation(forward_fn, frames, seed=0, record_history=False):
-    torch.manual_seed(seed)
-
-    layer_1 = torch.nn.Linear(n_in, n_hidden1)
-    layer_2 = torch.nn.Linear(n_hidden1, n_hidden2)
-    layer_3 = torch.nn.Linear(n_hidden2, n_out)
-
-    lif_1 = snn.Leaky(beta=0.9, reset_mechanism="zero")
-    lif_2 = snn.Leaky(beta=0.9, reset_mechanism="zero")
-    lif_3 = snn.Leaky(beta=0.9, reset_mechanism="zero")
-
-    mem_1, mem_2, mem_3 = torch.zeros(n_hidden1), torch.zeros(n_hidden2), torch.zeros(n_out)
-    trace_1 = torch.zeros(n_in)  # tracks recent activity of layer_1's inputs
-    trace_2 = torch.zeros(n_hidden1)  # tracks recent spikes of layer_1's output
-    trace_3 = torch.zeros(n_hidden2)  # tracks recent spikes of layer_2's output
-    trace_4 = torch.zeros(n_out)  # tracks recent spikes of layer_3's output (post-trace for layer_3)
-
-    spk_out, mem_out = [[] for _ in range(n_out)], [[] for _ in range(n_out)]
-    input_history = []
-
-    for t in range(n_steps):
-        input = frames[t]
-
-        out_1 = forward_fn(layer_1, input)
-        spk_1, mem_1 = lif_1(out_1, mem_1)
-        mem_1 = torch.clamp(mem_1, min=MEM_MIN, max=MEM_MAX)
-
-        out_2 = forward_fn(layer_2, spk_1)
-        spk_2, mem_2 = lif_2(out_2, mem_2)
-        mem_2 = torch.clamp(mem_2, min=MEM_MIN, max=MEM_MAX)
-
-        out_3 = forward_fn(layer_3, spk_2)
-        spk_3, mem_3 = lif_3(out_3, mem_3)
-        mem_3 = torch.clamp(mem_3, min=MEM_MIN, max=MEM_MAX)
-
-        trace_1 = beta_trace * trace_1 + input
-        trace_2 = beta_trace * trace_2 + spk_1
-        trace_3 = beta_trace * trace_3 + spk_2
-        trace_4 = beta_trace * trace_4 + spk_3
-
-        stdp_update(layer_1, input, spk_1, trace_1, trace_2)
-        stdp_update(layer_2, spk_1, spk_2, trace_2, trace_3)
-        stdp_update(layer_3, spk_2, spk_3, trace_3, trace_4)
-
-        if record_history:
-            input_history.append(input)
-            for i in range(n_out):
-                spk_out[i].append(spk_3[i].item())
-                mem_out[i].append(mem_3[i].item())
-
-    return {
-        "layer_3_weights": layer_3.weight.data,
-        "trace_3": trace_3,
-        "spk_out": spk_out,
-        "mem_out": mem_out,
-        "input_history": input_history,
-    }
-
-
-def measure_energy(forward_fn, label):
-    tracker = EmissionsTracker(
-        project_name=f"snn_{label}",
-        save_to_file=False,
-        log_level="error",
-        measure_power_secs=0.5,
-        allow_multiple_runs=True,
-    )
-    tracker.start()
-    start = time.perf_counter()
-    for _ in range(N_REPEATS):
-        run_simulation(forward_fn, shd_frames, seed=0, record_history=False)
-    elapsed = time.perf_counter() - start
-    tracker.stop()
-    data = tracker.final_emissions_data
-    return {
-        "label": label,
-        "duration_s": elapsed,
-        "energy_kwh": data.energy_consumed,
-        "emissions_kg": data.emissions,
-        "cpu_model": data.cpu_model,
-        "os": data.os,
-    }
-
-
-print(f"measuring energy: dense tensors ({N_REPEATS}x runs)...")
-dense_stats = measure_energy(dense_forward, "dense")
-
-print(f"measuring energy: sparse tensors ({N_REPEATS}x runs)...")
-sparse_stats = measure_energy(sparse_forward, "sparse")
-
-print("\n=== energy comparison (dense vs. sparse tensor format) ===")
-print(f"{'variant':>8} | {'duration (s)':>13} | {'energy (kWh)':>14} | {'CO2eq (kg)':>12}")
-print("-" * 56)
-for stats in (dense_stats, sparse_stats):
-    print(f"{stats['label']:>8} | {stats['duration_s']:>13.4f} | {stats['energy_kwh']:>14.3e} | {stats['emissions_kg']:>12.3e}")
-
-energy_delta_pct = (sparse_stats["energy_kwh"] - dense_stats["energy_kwh"]) / dense_stats["energy_kwh"] * 100
-time_delta_pct = (sparse_stats["duration_s"] - dense_stats["duration_s"]) / dense_stats["duration_s"] * 100
-print(f"\nsparse vs. dense: {energy_delta_pct:+.1f}% energy, {time_delta_pct:+.1f}% wall time")
-
-# ---- write a markdown report ----
-report_path = "energy_report.md"
-with open(report_path, "w") as f:
-    f.write("# Energy Comparison: Dense vs. Sparse Tensor Format\n\n")
-    f.write(f"Measured with [codecarbon](https://github.com/mlco2/codecarbon) on `{dense_stats['cpu_model']}` ({dense_stats['os']}).\n\n")
-    f.write(f"Network: {n_in} -> {n_hidden1} -> {n_hidden2} -> {n_out} LIF layers, "
-            f"input: SHD sample (label={shd_label}), {n_steps} timesteps of {TIME_WINDOW_US / 1000:.0f}ms bins, "
-            f"{N_REPEATS} runs per variant.\n\n")
-    f.write("| variant | duration (s) | energy (kWh) | CO2eq (kg) |\n")
-    f.write("|---|---|---|---|\n")
-    for stats in (dense_stats, sparse_stats):
-        f.write(f"| {stats['label']} | {stats['duration_s']:.4f} | {stats['energy_kwh']:.3e} | {stats['emissions_kg']:.3e} |\n")
-    f.write(f"\n**sparse vs. dense: {energy_delta_pct:+.1f}% energy, {time_delta_pct:+.1f}% wall time**\n")
-print(f"saved energy report to {report_path}")
-
-# ---- single recorded run for the table/plot (dense; not part of the energy measurement) ----
-plot_result = run_simulation(dense_forward, shd_frames, seed=0, record_history=True)
-spk_out, mem_out, input_history = plot_result["spk_out"], plot_result["mem_out"], plot_result["input_history"]
-
-print("\nfinal output-layer trace:", plot_result["trace_3"])
-print("final output-layer weights:\n", plot_result["layer_3_weights"])
-
-# ---- printed table (output layer, 10 neurons) ----
-header = " | ".join(f"V{i:<2}" for i in range(n_out)) + " | " + " ".join(f"s{i}" for i in range(n_out))
-print(f"\n{'t':>4} | {'in (sum)':>9} | {header}")
-print("-" * (20 + 8 * n_out))
+# ---- printed table ----
+print(f"{'t':>4} | {'in (sum)':>9} | {'V0':>7} {'V1':>7} {'V2':>7} | {'spk0':>5} {'spk1':>5} {'spk2':>5}")
+print("-" * 60)
 for t in range(n_steps):
     in_sum = input_history[t].sum().item()
-    voltages = " ".join(f"{mem_out[i][t]:>6.2f}" for i in range(n_out))
-    spikes = " ".join(f"{spk_out[i][t]:>2.0f}" for i in range(n_out))
-    print(f"{t:>4} | {in_sum:>9.2f} | {voltages} | {spikes}")
+    v0, v1, v2 = mem_out[0][t], mem_out[1][t], mem_out[2][t]
+    s0, s1, s2 = spk_out[0][t], spk_out[1][t], spk_out[2][t]
+    print(f"{t:>4} | {in_sum:>9.2f} | {v0:>7.2f} {v1:>7.2f} {v2:>7.2f} | {s0:>5.0f} {s1:>5.0f} {s2:>5.0f}")
 
-# ---- plot (output layer, 10 neurons) ----
+# ---- plot ----
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 fig, ax = plt.subplots(figsize=(8, 4))
-for i in range(n_out):
+for i in range(3):
     ax.plot(range(n_steps), mem_out[i], label=f"neuron {i} voltage")
     for t in range(n_steps):
         if spk_out[i][t] == 1:
@@ -199,8 +66,7 @@ for i in range(n_out):
 ax.axhline(1.0, color="black", linestyle="--", label="threshold")
 ax.set_xlabel("timestep")
 ax.set_ylabel("membrane voltage")
-ax.legend(fontsize=6, ncol=2)
-ax.set_title(f"3-layer LIF network ({n_in}->{n_hidden1}->{n_hidden2}->{n_out}) on SHD sample (label={shd_label})")
+ax.legend()
+ax.set_title("3-neuron LIF layer")
 plt.tight_layout()
 plt.savefig("step2_plot.png", dpi=120)
-print("\nsaved plot to step2_plot.png")
