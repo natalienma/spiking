@@ -69,8 +69,59 @@ You add a `trace[j]` value for each input neuron.
 `trace[j] = beta_trace * trace[j] + (1 if input[j] spiked, else 0)`
 
 ### SHD:
+Like the MNIST dataset for classifying numbers, but through binary sound instead of images.
+- bins: basically how much time is in one timestep
+
+## Learning: STDP with Logistic Regression
+
+## Learning: Surrogate gradients with backprop
+After forward pass, how do we determine loss/accuracy?
+
+**Spike Based Readout.**
+Let's say we are using the MNIST dataset, and the correct output is 3, so output neuron 3 should be most activated. 
+Regular NNs are sequential, so the activations will only "land" on the last/output layer once. But SNNs are recurrent and can be cyclical-- there is no clear "end." 
+
+So we count the number of times output neuron 3 spiked, and compare it to all the other output neurons. If neuron 3 spiked 40 times out of 100 timesteps, and neuron 7 spiked 50 times, then this is (confidently) wrong. 
+
+Cross entropy punishes this confident inaccuracy, so it's actually better to get the wrong answer by a small margin, with lots of noise. 
+
+**Final Timestep Readout**
+Only counts the state of the final timestep
+
+**Membrane potential readout**
+The most common--
+Adds up all the voltage in the output neurons, built up over the entire sequence, then softmaxes that. Because voltage is continuous, it will be less noisy than spikes. 
+
+**Final Timestep Readout**
+## Learning: R-STDP
 
 
 
 ## Next steps
-1. variable beta for different neurons (heterogeneous time constants)
+--------
+done:
+- add trace behavior
+- add reset behavior
+- extend SNN 
+- sparse tensor format
+
+to do:
+- add some form of supervised learning:
+    - surrogate gradients
+    - R-STDP
+    - STDP with logistic regression
+
+- different types of neurons
+- tiling
+- conditional kernels
+- parallelism/parallel scan
+- how do cochlear models work? 
+
+- use real dataset to test/validate - SHD
+-   bins (test small, medium, large)
+    Small (fine-grained): ~1–5ms bins → ~200–1000 timesteps per sample.
+    Medium: ~10ms bins → ~100 timesteps.
+    Big (coarse): ~20–50ms bins → ~20–50 timesteps.
+- at what point do you stop/is the model competent enough
+
+- variable beta for different neurons (heterogeneous time constants)
